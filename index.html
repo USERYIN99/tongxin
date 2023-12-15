@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>实时照片共享</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+</head>
+<body>
+    <h1>实时照片共享</h1>
+
+    <!-- 本地视频元素 -->
+    <video id="localVideo" width="320" height="240" autoplay muted></video>
+
+    <!-- 远程视频元素 -->
+    <video id="remoteVideo" width="320" height="240" autoplay></video>
+
+    <!-- 请求摄像头权限按钮 -->
+    <button id="requestPermissionBtn">请求摄像头权限</button>
+
+    <script>
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const requestPermissionBtn = document.getElementById('requestPermissionBtn');
+
+        // 请求摄像头权限
+        requestPermissionBtn.addEventListener('click', () => {
+            navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } })
+                .then((stream) => {
+                    // 将本地视频流显示在本地视频元素上
+                    localVideo.srcObject = stream;
+
+                    // 启动WebRTC连接
+                    startWebRTC(stream);
+                })
+                .catch((error) => {
+                    console.error('获取摄像头权限失败:', error);
+                });
+        });
+
+        function startWebRTC(localStream) {
+            const configuration = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+            const peerConnection = new RTCPeerConnection(configuration);
+            const socket = io();
+
+            // 将本地流添加到连接中
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+            // 监听远程视频流事件
+            peerConnection.addEventListener('track', (event) => {
+                if (event.streams && event.streams[0]) {
+                    // 将远程视频流显示在远程视频元素上
+                    remoteVideo.srcObject = event.streams[0];
+                }
+            });
+
+            // 连接到Socket.io信令服务器
+            socket.on('connect', () => {
+                console.log('连接到信令服务器');
+
+                // 发起者的逻辑
+                if (socket.id === peerConnectionInitiatorId) {
+                    // 创建Offer并设置本地描述
+                    peerConnection.createOffer()
+                        .then(offer => peerConnection.setLocalDescription(offer))
+                        .then(() => {
+                            // 通过Socket.io发送本地SDP
+                            socket.emit('offer', peerConnection.localDescription);
+                        })
+                        .catch(error => console.error('创建Offer失败:', error));
+                }
+            });
+
+            // 监听来自远程用户的SDP和ICE候选
+            socket.on('offer', (offer) => {
+                console.log('收到Offer');
+                // 应答者的逻辑
+                if (!peerConnectionInitiatorId) {
+                    peerConnectionInitiatorId = socket.id;
+                    // 设置远程SDP
+                    peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+                    // 创建Answer并设置本地描述
+                    peerConnection.createAnswer()
+                        .then(answer => peerConnection.setLocalDescription(answer))
+                        .then(() => {
+                            // 通过Socket.io发送本地SDP
+                            socket.emit('answer', peerConnection.localDescription);
+                        })
+                        .catch(error => console.error('创建Answer失败:', error));
+                }
+            });
+
+            socket.on('answer', (answer) => {
+                console.log('收到Answer');
+                // 发起者的逻辑
+                if (socket.id === peerConnectionInitiatorId) {
+                    // 设置远程SDP
+                    peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+                }
+            });
+
+            socket.on('ice-candidate', (candidate) => {
+                console.log('收到ICE候选');
+                // 发送ICE候选给对方
+                peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+            });
+
+            // 监听用户断开连接
+            socket.on('disconnect', () => {
+                console.log('用户断开连接');
+                // 重置发起者ID
+                peerConnectionInitiatorId = null;
+            });
+
+            let peerConnectionInitiatorId; // 记录发起者的Socket ID
+        }
+    </script>
+</body>
+</html>
